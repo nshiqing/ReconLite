@@ -50,22 +50,39 @@ def brute_force(domain: str, wordlist: Iterable[str], max_workers: int = 50) -> 
     return sorted(found, key=lambda r: r.subdomain)
 
 
+def _is_valid_subdomain(name: str, domain: str) -> bool:
+    """True only if `name` is `domain` itself or a genuine subdomain of it -
+    e.g. www.example.com matches example.com, but testexample.com does not,
+    and neither does an email address or a cert issuer string."""
+    if "@" in name or " " in name:
+        return False  # crt.sh name_value can contain email SANs / issuer text
+    return name == domain or name.endswith("." + domain)
+
+
 def crtsh_lookup(domain: str, timeout: int = 15) -> list[SubdomainResult]:
     """Query crt.sh certificate transparency logs for subdomains. Passive - no
-    traffic ever touches the target itself."""
+    traffic ever touches the target itself.
+
+    Note: crt.sh is a free public service and can be slow, rate-limited, or
+    briefly unavailable. On any failure this returns an empty list rather
+    than raising, so a run with fewer/no crt.sh results doesn't necessarily
+    mean the domain has fewer subdomains - it may just mean crt.sh didn't
+    respond that time. Re-run if you need a complete picture.
+    """
     url = f"https://crt.sh/?q=%.{domain}&output=json"
     try:
         resp = requests.get(url, timeout=timeout)
         resp.raise_for_status()
         entries = resp.json()
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as exc:
+        print(f"[crtsh] lookup failed or timed out: {exc}")
         return []
 
     names: set[str] = set()
     for entry in entries:
         for name in entry.get("name_value", "").splitlines():
             name = name.strip().lstrip("*.")
-            if name.endswith(domain):
+            if _is_valid_subdomain(name, domain):
                 names.add(name)
 
     results = []
